@@ -12,11 +12,12 @@ LICENSE file."""
 from __future__ import print_function
 
 import itertools
+import numpy as np
 import os.path
 
 import rospy
 import rospkg
-from geometry_msgs.msg import Point, PointStamped, PoseStamped, Quaternion, TransformStamped, Vector3
+from geometry_msgs.msg import Point, PointStamped, PoseStamped, PoseWithCovarianceStamped, Quaternion, TransformStamped, Vector3
 from std_msgs.msg import ColorRGBA, Header
 import tf
 from visualization_msgs.msg import Marker
@@ -52,6 +53,9 @@ class NatnetClientNode(object):
         # {rigid body id: rigid body pose publisher}
         self.rigid_body_pubs = {}  # type: dict[int, rospy.Publisher]
 
+        # {rigid body id: rigid body pose publisher}
+        self.rigid_body_covariance_pubs = {}  # type: dict[int, rospy.Publisher]
+
         # {rigid body id: rigid body name}
         self.rigid_body_names = {}  # type: dict[int, str]
 
@@ -67,6 +71,20 @@ class NatnetClientNode(object):
         self.client = None  # type: natnet.comms.Client
         self.mocap_frame = rospy.get_param('~mocap_frame', 'mocap')
         self.tf_remap = rospy.get_param('~tf_remap', {})  # type: dict
+        self.publish_covariance = rospy.get_param("~publish_covariance", False)
+        print(self.publish_covariance)
+
+    def covariance_matrix(self):
+        # TODO: Actually calclate covariance
+        matrix = np.zeros((6, 6))
+        matrix[0, 0] = 0.00005
+        matrix[1, 1] = 0.00005
+        matrix[2, 2] = 0.00005
+
+        matrix[3, 3] = 0.0001
+        matrix[4, 4] = 0.0001
+        matrix[5, 5] = 0.0001
+        return matrix
 
     def model_definitions_callback(self, rigid_bodies, skeletons, markersets):
         # TODO: Make sure it's ok to just throw publishers away like this
@@ -83,6 +101,10 @@ class NatnetClientNode(object):
 
             pub = rospy.Publisher('~rigid_bodies/{}/pose'.format(name), PoseStamped, queue_size=10)
             self.rigid_body_pubs[b.id_] = pub
+
+            if self.publish_covariance:
+                pub = rospy.Publisher('~rigid_bodies/{}/pose_with_covariance'.format(name), PoseWithCovarianceStamped, queue_size=10)
+                self.rigid_body_covariance_pubs[b.id_] = pub
 
             pub = rospy.Publisher('~rigid_bodies/{}/markers'.format(name), MarkerList, queue_size=10)
             self.markerlist_pubs[b.id_] = pub
@@ -105,6 +127,17 @@ class NatnetClientNode(object):
                 self.rigid_body_pubs[b.id_].publish(message)
             except KeyError:
                 print('Unknown rigid body {}'.format(b.id_))
+
+            if self.publish_covariance:
+                try:
+                    covariance_message = PoseWithCovarianceStamped()
+                    covariance_message.header = header
+                    covariance_message.pose.pose.position = Point(*b.position)
+                    covariance_message.pose.pose.orientation = Quaternion(*b.orientation)
+                    covariance_message.pose.covariance = self.covariance_matrix().ravel()
+                    self.rigid_body_covariance_pubs[b.id_].publish(covariance_message)
+                except KeyError:
+                    print('Unknown rigid body {}'.format(b.id_))
 
     def _publish_rigid_body_tfs(self, header, rigid_bodies):
         """Publish mocap->name transform for each rigid body."""
